@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>도서관 대출 시스템</title>
+<style>
+  :root { --bg:#f6f4ef; --card:#fff; --ink:#1f2328; --muted:#6b7280; --line:#e5e1d8;
+          --accent:#2f5d50; --ok:#1f7a3f; --okbg:#e6f4ea; --bad:#c62828; --badbg:#fdecea; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font-family:-apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+  .wrap { max-width:640px; margin:0 auto; padding:20px 16px 48px; }
+  h1 { font-size:24px; margin:4px 0 4px; }
+  .sub { color:var(--muted); font-size:14px; margin:0 0 16px; }
+  #status { font-size:14px; padding:10px 12px; border-radius:10px; background:#fff7e0; margin-bottom:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:14px; }
+  .card h2 { font-size:17px; margin:0 0 12px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  label { flex:1 1 140px; font-size:13px; color:var(--muted); display:flex; flex-direction:column; gap:4px; }
+  input { font-size:16px; padding:10px; border:1px solid var(--line); border-radius:8px; width:100%; }
+  .btns { display:flex; gap:8px; margin-top:12px; }
+  button { font-size:16px; font-weight:600; padding:11px 16px; border:0; border-radius:8px;
+           background:var(--accent); color:#fff; cursor:pointer; flex:1; }
+  button.alt { background:#8a6d3b; }
+  button.ghost { background:#fff; color:var(--muted); border:1px solid var(--line); font-weight:500; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  #result { font-size:22px; font-weight:800; text-align:center; padding:18px; border-radius:14px;
+            margin-bottom:14px; border:2px solid var(--line); background:#fff; min-height:64px; }
+  #result.ok { color:var(--ok); background:var(--okbg); border-color:var(--ok); }
+  #result.bad { color:var(--bad); background:var(--badbg); border-color:var(--bad); font-size:30px; }
+  #result small { display:block; font-size:14px; font-weight:500; color:var(--muted); margin-top:4px; }
+  table { width:100%; border-collapse:collapse; margin-top:12px; font-size:15px; }
+  th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:600; font-size:13px; }
+  #log { font-size:13px; color:var(--muted); padding-left:18px; margin:8px 0 0; max-height:220px; overflow:auto; }
+  .empty { color:var(--muted); font-size:14px; margin-top:10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>📚 도서관 대출 시스템</h1>
+  <p class="sub">책: B001 ~ B005 · 대출 기간 14일 · 날짜는 "며칠째" 숫자로 입력</p>
+
+  <div id="status">solution.py 불러오는 중… (처음엔 10~20초 걸릴 수 있어요)</div>
+
+  <div id="result">결과가 여기에 표시됩니다</div>
+
+  <div class="card">
+    <h2>대출 · 반납</h2>
+    <div class="row">
+      <label>책 번호 <input id="book" placeholder="예: B001" autocomplete="off"></label>
+      <label>이름 <input id="name" placeholder="예: 김민수" autocomplete="off"></label>
+      <label>며칠째 <input id="day" placeholder="예: 1" inputmode="decimal" autocomplete="off"></label>
+    </div>
+    <div class="btns">
+      <button id="btnBorrow" disabled>대출</button>
+      <button id="btnReturn" class="alt" disabled>반납</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>대출 목록</h2>
+    <div class="row">
+      <label>이름 <input id="listName" placeholder="예: 김민수" autocomplete="off"></label>
+    </div>
+    <div class="btns"><button id="btnList" disabled>목록 보기</button></div>
+    <div id="listOut"></div>
+  </div>
+
+  <div class="card">
+    <h2>기록</h2>
+    <ol id="log"></ol>
+    <div class="btns"><button id="btnReset" class="ghost" disabled>처음 상태로 초기화</button></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+<script>
+// 대출 규칙은 여기 없습니다. 모든 판단은 solution.py의 LibraryLoan이 합니다.
+let pyodide, lib;
+const $ = (id) => document.getElementById(id);
+const buttons = ["btnBorrow", "btnReturn", "btnList", "btnReset"];
+
+function showResult(ok, title, detail) {
+  const r = $("result");
+  r.className = ok ? "ok" : "bad";
+  r.innerHTML = title + (detail ? "<small>" + detail + "</small>" : "");
+}
+function log(text) {
+  const li = document.createElement("li");
+  li.textContent = text;
+  $("log").prepend(li);
+}
+// 입력한 날짜를 숫자로 바꿔 그대로 넘깁니다. (검사는 solution.py가 함)
+//  "3" → 정수 3, "2.5" → 실수 2.5, 빈칸·글자 → None
+function readDay() {
+  const s = $("day").value.trim();
+  if (s === "" || isNaN(Number(s))) return null;
+  return Number(s);
+}
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+async function init() {
+  try {
+    if (typeof loadPyodide !== "function")
+      throw new Error("파이썬 실행 엔진(Pyodide)을 내려받지 못했습니다. 인터넷 연결을 확인하고 새로고침하세요.");
+    // 60초 안에 시작하지 못하면 멈춰 있지 않고 실패라고 알려줌
+    pyodide = await Promise.race([
+      loadPyodide(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(
+        "파이썬 실행 엔진이 시작되지 않았습니다. 채팅 미리보기에서는 동작하지 않으니 GitHub Pages 링크에서 열어 주세요.")), 60000))
+    ]);
+    const res = await fetch("solution.py?v=" + Date.now());
+    if (!res.ok) throw new Error("solution.py 파일을 찾지 못했습니다 (" + res.status + ")");
+    const code = await res.text();
+    pyodide.runPython(code);
+    resetLib();
+    $("status").textContent = "✅ solution.py 불러오기 완료 — 사용할 수 있어요";
+    $("status").style.background = "#e6f4ea";
+    buttons.forEach(id => $(id).disabled = false);
+  } catch (e) {
+    $("status").textContent = "❌ 불러오기 실패: " + e.message;
+    $("status").style.background = "#fdecea";
+  }
+}
+function resetLib() {
+  if (lib) lib.destroy();
+  lib = pyodide.globals.get("LibraryLoan")();
+}
+
+$("btnBorrow").onclick = () => {
+  const book = $("book").value.trim(), name = $("name").value.trim(), day = readDay();
+  const ok = lib.borrow(book, name, day);
+  if (ok === true) showResult(true, "대출 성공", esc(name) + " · " + esc(book) + " · " + day + "일째");
+  else showResult(false, "실패", "대출이 거절되었습니다");
+  log(`대출 ${name} ${book} ${$("day").value.trim()}일째 → ${ok === true ? "성공" : "실패"}`);
+};
+
+$("btnReturn").onclick = () => {
+  const book = $("book").value.trim(), name = $("name").value.trim(), day = readDay();
+  const late = lib.return_book(book, name, day);
+  if (late === -1) showResult(false, "실패", "반납이 거절되었습니다");
+  else showResult(true, "반납 성공 · 연체 " + late + "일", esc(name) + " · " + esc(book) + " · " + day + "일째");
+  log(`반납 ${name} ${book} ${$("day").value.trim()}일째 → ${late === -1 ? "실패" : "연체 " + late + "일"}`);
+};
+
+$("btnList").onclick = () => {
+  const name = $("listName").value.trim();
+  const proxy = lib.get_loans(name);
+  const loans = proxy.toJs();
+  proxy.destroy();
+  if (loans.length === 0) {
+    $("listOut").innerHTML = '<p class="empty">' + esc(name) + ' 님이 빌린 책이 없습니다.</p>';
+  } else {
+    $("listOut").innerHTML = "<table><tr><th>책 번호</th><th>반납 기한</th></tr>" +
+      loans.map(([b, d]) => `<tr><td>${esc(b)}</td><td>${d}일째까지</td></tr>`).join("") + "</table>";
+  }
+  log(`목록 ${name} → ${loans.length ? loans.map(([b, d]) => b + "(" + d + ")").join(", ") : "없음"}`);
+};
+
+$("btnReset").onclick = () => {
+  resetLib();
+  $("listOut").innerHTML = "";
+  $("log").innerHTML = "";
+  const r = $("result"); r.className = ""; r.textContent = "처음 상태로 초기화했습니다";
+};
+
+init();
+</script>
+</body>
+</html>
